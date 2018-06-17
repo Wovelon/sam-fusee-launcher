@@ -1,9 +1,17 @@
 // Serial console output set to "Serial1" for Adafruit Feather M0 - set back to "Serial" for Sparkfun boards
 
+#define USEDISPLAY   // comment out, if you do not want to use a display for choosing payloads and status
+
 #include <Arduino.h>
 #include <usb.h>
 #include <SPI.h>
 #include <SD.h>
+#ifdef USEDISPLAY
+    #include <Wire.h>
+    #include <Adafruit_GFX.h>
+    #include <Adafruit_SSD1306.h>
+    #include <Adafruit_FeatherOLED.h>
+#endif
 
 // Contains fuseeBin and FUSEE_BIN_LENGTH
 #include "payload.h"
@@ -34,12 +42,22 @@ byte tegraDeviceAddress = -1;
 unsigned long lastCheckTime = 0;
 
 bool useSD = false;
-String payloadname = "payload.bin";
+String payloadname = "PAYLOAD.BIN";
 
 // The pin on the microcontroller board connected as the MicroSD card CS (chip select) pin
 // is pin 10 for Adafruit Adalogger FeatherWing
 // is pin 4 for Adafruit Feather M0 Adalogger board
 const int chipSelect = 4;
+
+#ifdef USEDISPLAY
+    // Adafruit_SSD1306 display = Adafruit_SSD1306();
+    Adafruit_FeatherOLED display = Adafruit_FeatherOLED();
+    #define BUTTON_A 9
+    #define BUTTON_B 6
+    #define BUTTON_C 5
+    #define LED      13
+    #define VBAT_PIN A7
+#endif
 
 const char *hexChars = "0123456789ABCDEF";
 void serialPrintHex(const byte *data, byte length)
@@ -228,8 +246,37 @@ void setup()
 {
     usb.Init();
     Serial1.begin(115200);
+#ifdef USEDISPLAY
+    //display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+    display.init();
+    pinMode(BUTTON_A, INPUT_PULLUP);
+    pinMode(BUTTON_B, INPUT_PULLUP);
+    pinMode(BUTTON_C, INPUT_PULLUP);
+    pinMode(VBAT_PIN, 0x4);  // INPUT_ANALOG
 
+    float measuredvbat = analogRead(VBAT_PIN);
+    measuredvbat *= 2;    // we divided by 2, so multiply back
+    measuredvbat *= 3.3;  // Multiply by 3.3V, our reference voltage
+    measuredvbat /= 1024; // convert to voltage
+    
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(WHITE);
+    display.setCursor(0,0);
+    display.println(" ");
+    display.println(" ");
+    display.println("Starting up...");
+    display.setBattery(measuredvbat);
+    display.setBatteryVisible(true);
+    display.renderBattery();
+    display.display();
+        
+    delay(2000);
+    display.setBatteryVisible(false);
+    pinMode(BUTTON_A, INPUT_PULLUP);  // Battery input (A7) is same pin as button A...
+#else
     delay(100);
+#endif
 
     // check if SD present, if not, use standard payload from payload.h
     if (SD.begin(chipSelect)) {
@@ -240,10 +287,69 @@ void setup()
     }
 
     Serial1.println("Ready! Waiting for Tegra...");
+#ifdef USEDISPLAY
+    display.clearDisplay();
+    display.setCursor(0,0);
+    display.println("Waiting for Tegra...");
+    display.println("Using payload:");
+    display.println(payloadname);
+    display.println(" [A] -> cycle payload");
+    display.display();
+#endif
 
     while (!foundTegra)
     {
         usb.Task();
+
+#ifdef USEDISPLAY
+        if (! digitalRead(BUTTON_A))
+        {
+            File root = SD.open("/");
+            boolean foundOld = false;
+            while (true)
+            {
+                File entry = root.openNextFile();
+                if (! entry)
+                {
+                    // no more files - start with first file
+                    root.close();
+                    root = SD.open("/");
+                }
+                if (! entry.isDirectory())
+                {
+                    String currentname(entry.name());
+                    if (currentname == payloadname)
+                    {
+                        foundOld = true;
+                    } else {
+                        if (foundOld && currentname.endsWith(".BIN") )
+                        {
+                            payloadname = entry.name();
+                            break;
+                        }
+                    }
+                }
+                entry.close();
+            }
+            root.close();
+
+            // Wait for button release...
+            while (! digitalRead(BUTTON_A)) 
+            {
+                delay(10);
+            }
+
+            display.clearDisplay();
+            display.setCursor(0,0);
+            display.println("Waiting for Tegra...");
+            display.println("Using payload:");
+            display.println(payloadname);
+            display.println(" [A] -> cycle payload");
+            display.display();
+
+        }
+        delay(10);
+#endif
 
         if (millis() > lastCheckTime + 100)
             usb.ForEachUsbDevice(&findTegraDevice);
@@ -258,6 +364,12 @@ void setup()
     serialPrintHex(deviceID, 16);
 
     Serial1.println("Sending payload...");
+#ifdef USEDISPLAY
+    display.clearDisplay();
+    display.setCursor(0,0);
+    display.println("Sending payload...");
+    display.display();
+#endif
     UHD_Pipe_Alloc(tegraDeviceAddress, 0x01, USB_HOST_PTYPE_BULK, USB_EP_DIR_OUT, 0x40, 0, USB_HOST_NB_BK_1);
     packetsWritten = 0;
     if (useSD)
@@ -272,9 +384,24 @@ void setup()
     }
 
     Serial1.println("Triggering vulnerability...");
+#ifdef USEDISPLAY
+    display.clearDisplay();
+    display.setCursor(0,0);
+    display.println("Triggering");
+    display.println("vulnerability...");
+    display.display();
+#endif
     usb.ctrlReq(tegraDeviceAddress, 0, USB_SETUP_DEVICE_TO_HOST | USB_SETUP_TYPE_STANDARD | USB_SETUP_RECIPIENT_INTERFACE,
         0x00, 0x00, 0x00, 0x00, 0x7000, 0x7000, usbWriteBuffer, NULL);
     Serial1.println("Done!");
+#ifdef USEDISPLAY
+    display.clearDisplay();
+    display.setCursor(0,0);
+    display.println("Done!");
+    display.println(" ");
+    display.println("[Reset] -> start over");
+    display.display();
+#endif
 
     // Turn off all LEDs and go to sleep. To launch another payload, press the reset button on the device.
     delay(100);
