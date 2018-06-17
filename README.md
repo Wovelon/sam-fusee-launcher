@@ -20,7 +20,7 @@ Note that the Switch does NOT provide power in RCM, so you will need to power th
 - Sparkfun boards use "Serial", Adafruit Feather boards use "Serial1" for terminal (3.3v, e.g. via FTDI)
 - My code is ugly - could use some refactoring... :-)
 - Photo of Adafruit M0 Adalogger (with MicroSD card) + Adafruit FeatherWing OLED + LiPo Battery 150mA + AmazonBasics Micro-USB to USB-C cable:
-[[https://github.com/Wovelon/sam-fusee-launcher/blob/master/myasfl.jpg]]
+![Image](https://github.com/Wovelon/sam-fusee-launcher/blob/master/myasfl.jpg)
 
 ### Used the following Adafruit products:
 - A feather board + MicroSD card reader: [Adafruit Feather M0 Adalogger](https://www.adafruit.com/product/2796) OR [Adafruit Feather M0 Basic Proto](https://www.adafruit.com/product/2772) + [Adalogger FeatherWing - RTC + SD Add-on](https://www.adafruit.com/product/2922)
